@@ -1,0 +1,12 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: eth-explorer-postgres
+    environment:
+      POSTGRES_USER: explorer
+      POSTGRES_PASSWORD: explorer
+      POSTGRES_DB: explorer
+    ports:
+      - "5433:5432"
+    volumes:
+      - /mnt/ugreen/postgres/eth_explorer_mvp:/var/lib/postgresql/data
