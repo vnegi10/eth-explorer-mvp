@@ -1,4 +1,5 @@
 import os
+import time
 
 import duckdb
 import psycopg
@@ -10,6 +11,8 @@ load_dotenv()
 PARQUET_DIR = os.environ["PARQUET_DIR"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 INGEST_PIPELINE = "serving_tables_v1"
+ETL_BATCH_SIZE = int(os.environ.get("ETL_BATCH_SIZE", "100000"))
+ETL_LOG_EVERY_BATCHES = int(os.environ.get("ETL_LOG_EVERY_BATCHES", "10"))
 
 BLOCKS_GLOB = os.path.join(PARQUET_DIR, "blocks", "*.parquet")
 TX_GLOB = os.path.join(PARQUET_DIR, "transactions", "*.parquet")
@@ -87,9 +90,20 @@ def copy_query_to_table(
     query: str,
     table_name: str,
     columns: list[str],
-    batch_size: int = 100_000,
+    batch_size: int = ETL_BATCH_SIZE,
+    log_every_batches: int = ETL_LOG_EVERY_BATCHES,
+    label: str | None = None,
 ) -> None:
+    if batch_size <= 0:
+        raise ValueError("ETL_BATCH_SIZE must be > 0")
+    if log_every_batches <= 0:
+        raise ValueError("ETL_LOG_EVERY_BATCHES must be > 0")
+
     duck.execute(query)
+    table_label = label or table_name
+    started_at = time.perf_counter()
+    total_rows = 0
+    batch_num = 0
     with cur.copy(
         sql.SQL("COPY {} ({}) FROM STDIN").format(
             sql.Identifier(table_name),
@@ -100,8 +114,24 @@ def copy_query_to_table(
             rows = duck.fetchmany(batch_size)
             if not rows:
                 break
+            batch_num += 1
+            batch_count = len(rows)
+            total_rows += batch_count
             for row in rows:
                 copy.write_row(row)
+            if batch_num % log_every_batches == 0:
+                elapsed = time.perf_counter() - started_at
+                rate = total_rows / elapsed if elapsed > 0 else 0.0
+                print(
+                    f"[{table_label}] copied {total_rows:,} rows "
+                    f"across {batch_num} batches ({rate:,.0f} rows/s)"
+                )
+    elapsed = time.perf_counter() - started_at
+    rate = total_rows / elapsed if elapsed > 0 else 0.0
+    print(
+        f"[{table_label}] copy complete: {total_rows:,} rows "
+        f"in {elapsed:,.1f}s ({rate:,.0f} rows/s)"
+    )
 
 
 def get_last_ingested_block(cur: psycopg.Cursor, pipeline_name: str) -> int:
@@ -169,7 +199,16 @@ def load_blocks(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
-    copy_query_to_table(cur, duck, query, "_stg_blocks", columns)
+    copy_query_to_table(
+        cur,
+        duck,
+        query,
+        "_stg_blocks",
+        columns,
+        batch_size=ETL_BATCH_SIZE,
+        log_every_batches=ETL_LOG_EVERY_BATCHES,
+        label="blocks",
+    )
     cur.execute(
         """
         INSERT INTO blocks (block_number, block_hash, author, gas_used, extra_data, timestamp, base_fee_per_gas, chain_id)
@@ -272,7 +311,16 @@ def load_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
-    copy_query_to_table(cur, duck, query, "_stg_tx", columns)
+    copy_query_to_table(
+        cur,
+        duck,
+        query,
+        "_stg_tx",
+        columns,
+        batch_size=ETL_BATCH_SIZE,
+        log_every_batches=ETL_LOG_EVERY_BATCHES,
+        label="tx",
+    )
     cur.execute(
         """
         INSERT INTO tx (
@@ -350,7 +398,16 @@ def load_address_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> Non
         )
         """
     )
-    copy_query_to_table(cur, duck, query, "_stg_address_tx", columns)
+    copy_query_to_table(
+        cur,
+        duck,
+        query,
+        "_stg_address_tx",
+        columns,
+        batch_size=ETL_BATCH_SIZE,
+        log_every_batches=ETL_LOG_EVERY_BATCHES,
+        label="address_tx",
+    )
     cur.execute(
         """
         INSERT INTO address_tx (
