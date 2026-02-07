@@ -1,5 +1,4 @@
 import os
-import tempfile
 
 import duckdb
 import psycopg
@@ -82,20 +81,27 @@ CREATE INDEX IF NOT EXISTS address_tx_recent
 """
 
 
-def export_query_to_csv(duck: duckdb.DuckDBPyConnection, query: str, path: str) -> None:
-    duck.execute(f"COPY ({query}) TO '{path}' (HEADER, DELIMITER ',');")
-
-
-def copy_csv_to_table(cur: psycopg.Cursor, table_name: str, columns: list[str], csv_path: str) -> None:
+def copy_query_to_table(
+    cur: psycopg.Cursor,
+    duck: duckdb.DuckDBPyConnection,
+    query: str,
+    table_name: str,
+    columns: list[str],
+    batch_size: int = 100_000,
+) -> None:
+    duck.execute(query)
     with cur.copy(
-        sql.SQL("COPY {} ({}) FROM STDIN WITH (FORMAT csv, HEADER true)").format(
+        sql.SQL("COPY {} ({}) FROM STDIN").format(
             sql.Identifier(table_name),
             sql.SQL(", ").join(map(sql.Identifier, columns)),
         )
     ) as copy:
-        with open(csv_path, "rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                copy.write(chunk)
+        while True:
+            rows = duck.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                copy.write_row(row)
 
 
 def get_last_ingested_block(cur: psycopg.Cursor, pipeline_name: str) -> int:
@@ -128,10 +134,10 @@ def set_last_ingested_block(cur: psycopg.Cursor, pipeline_name: str, block_numbe
 def load_blocks(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
     columns = [
         "block_number",
-        "block_hash",
-        "author",
+        "block_hash_hex",
+        "author_hex",
         "gas_used",
-        "extra_data",
+        "extra_data_hex",
         "timestamp",
         "base_fee_per_gas",
         "chain_id",
@@ -139,48 +145,67 @@ def load_blocks(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
     query = """
       SELECT
         block_number::BIGINT,
-        block_hash,
-        author,
+        hex(block_hash) AS block_hash_hex,
+        hex(author) AS author_hex,
         gas_used::BIGINT,
-        extra_data,
+        hex(extra_data) AS extra_data_hex,
         timestamp::BIGINT,
         base_fee_per_gas::BIGINT,
         chain_id::BIGINT
       FROM v_blocks_new
     """
 
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp:
-        export_query_to_csv(duck, query, tmp.name)
-        cur.execute("CREATE TEMP TABLE _stg_blocks (LIKE blocks)")
-        copy_csv_to_table(cur, "_stg_blocks", columns, tmp.name)
-        cur.execute(
-            """
-            INSERT INTO blocks (block_number, block_hash, author, gas_used, extra_data, timestamp, base_fee_per_gas, chain_id)
-            SELECT block_number, block_hash, author, gas_used, extra_data, timestamp, base_fee_per_gas, chain_id
-            FROM _stg_blocks
-            ON CONFLICT (block_number) DO UPDATE SET
-              block_hash = EXCLUDED.block_hash,
-              author = EXCLUDED.author,
-              gas_used = EXCLUDED.gas_used,
-              extra_data = EXCLUDED.extra_data,
-              timestamp = EXCLUDED.timestamp,
-              base_fee_per_gas = EXCLUDED.base_fee_per_gas,
-              chain_id = EXCLUDED.chain_id
-            """
+    cur.execute(
+        """
+        CREATE TEMP TABLE _stg_blocks (
+          block_number BIGINT,
+          block_hash_hex TEXT,
+          author_hex TEXT,
+          gas_used BIGINT,
+          extra_data_hex TEXT,
+          timestamp BIGINT,
+          base_fee_per_gas BIGINT,
+          chain_id BIGINT
         )
+        """
+    )
+    copy_query_to_table(cur, duck, query, "_stg_blocks", columns)
+    cur.execute(
+        """
+        INSERT INTO blocks (block_number, block_hash, author, gas_used, extra_data, timestamp, base_fee_per_gas, chain_id)
+        SELECT
+          block_number,
+          decode(block_hash_hex, 'hex'),
+          decode(author_hex, 'hex'),
+          gas_used,
+          decode(extra_data_hex, 'hex'),
+          timestamp,
+          base_fee_per_gas,
+          chain_id
+        FROM _stg_blocks
+        ON CONFLICT (block_number) DO UPDATE SET
+          block_hash = EXCLUDED.block_hash,
+          author = EXCLUDED.author,
+          gas_used = EXCLUDED.gas_used,
+          extra_data = EXCLUDED.extra_data,
+          timestamp = EXCLUDED.timestamp,
+          base_fee_per_gas = EXCLUDED.base_fee_per_gas,
+          chain_id = EXCLUDED.chain_id
+        """
+    )
 
 
 def load_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
     columns = [
-        "transaction_hash",
+        "transaction_hash_hex",
         "block_number",
         "transaction_index",
         "nonce",
-        "from_address",
-        "to_address",
+        "from_address_hex",
+        "to_address_hex",
         "value_string",
         "value_f64",
-        "input",
+        "input_hex",
         "gas_limit",
         "gas_used",
         "gas_price",
@@ -196,15 +221,15 @@ def load_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
     ]
     query = """
       SELECT
-        transaction_hash,
+        hex(transaction_hash) AS transaction_hash_hex,
         block_number::BIGINT,
         transaction_index::BIGINT,
         nonce::BIGINT,
-        from_address,
-        to_address,
+        hex(from_address) AS from_address_hex,
+        hex(to_address) AS to_address_hex,
         value_string,
         value_f64,
-        input,
+        hex(input) AS input_hex,
         gas_limit::BIGINT,
         gas_used::BIGINT,
         gas_price::BIGINT,
@@ -220,37 +245,72 @@ def load_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
       FROM v_tx_new
     """
 
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp:
-        export_query_to_csv(duck, query, tmp.name)
-        cur.execute("CREATE TEMP TABLE _stg_tx (LIKE tx)")
-        copy_csv_to_table(cur, "_stg_tx", columns, tmp.name)
-        cur.execute(
-            """
-            INSERT INTO tx (
-              transaction_hash, block_number, transaction_index, nonce, from_address, to_address,
-              value_string, value_f64, input, gas_limit, gas_used, gas_price, transaction_type,
-              max_priority_fee_per_gas, max_fee_per_gas, success, n_input_bytes, n_input_zero_bytes,
-              n_input_nonzero_bytes, chain_id, block_timestamp
-            )
-            SELECT
-              transaction_hash, block_number, transaction_index, nonce, from_address, to_address,
-              value_string, value_f64, input, gas_limit, gas_used, gas_price, transaction_type,
-              max_priority_fee_per_gas, max_fee_per_gas, success, n_input_bytes, n_input_zero_bytes,
-              n_input_nonzero_bytes, chain_id, block_timestamp
-            FROM _stg_tx
-            ON CONFLICT (transaction_hash) DO NOTHING
-            """
+    cur.execute(
+        """
+        CREATE TEMP TABLE _stg_tx (
+          transaction_hash_hex TEXT,
+          block_number BIGINT,
+          transaction_index BIGINT,
+          nonce BIGINT,
+          from_address_hex TEXT,
+          to_address_hex TEXT,
+          value_string TEXT,
+          value_f64 DOUBLE PRECISION,
+          input_hex TEXT,
+          gas_limit BIGINT,
+          gas_used BIGINT,
+          gas_price BIGINT,
+          transaction_type BIGINT,
+          max_priority_fee_per_gas BIGINT,
+          max_fee_per_gas BIGINT,
+          success BOOLEAN,
+          n_input_bytes BIGINT,
+          n_input_zero_bytes BIGINT,
+          n_input_nonzero_bytes BIGINT,
+          chain_id BIGINT,
+          block_timestamp BIGINT
         )
+        """
+    )
+    copy_query_to_table(cur, duck, query, "_stg_tx", columns)
+    cur.execute(
+        """
+        INSERT INTO tx (
+          transaction_hash, block_number, transaction_index, nonce, from_address, to_address,
+          value_string, value_f64, input, gas_limit, gas_used, gas_price, transaction_type,
+          max_priority_fee_per_gas, max_fee_per_gas, success, n_input_bytes, n_input_zero_bytes,
+          n_input_nonzero_bytes, chain_id, block_timestamp
+        )
+        SELECT
+          decode(transaction_hash_hex, 'hex'),
+          block_number,
+          transaction_index,
+          nonce,
+          decode(from_address_hex, 'hex'),
+          decode(to_address_hex, 'hex'),
+          value_string,
+          value_f64,
+          decode(input_hex, 'hex'),
+          gas_limit,
+          gas_used,
+          gas_price,
+          transaction_type,
+          max_priority_fee_per_gas, max_fee_per_gas, success, n_input_bytes, n_input_zero_bytes,
+          n_input_nonzero_bytes, chain_id, block_timestamp
+        FROM _stg_tx
+        ON CONFLICT (transaction_hash) DO NOTHING
+        """
+    )
 
 
 def load_address_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> None:
     columns = [
-        "address",
-        "transaction_hash",
+        "address_hex",
+        "transaction_hash_hex",
         "block_number",
         "transaction_index",
         "direction",
-        "counterparty",
+        "counterparty_hex",
         "value_string",
         "value_f64",
         "success",
@@ -259,12 +319,12 @@ def load_address_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> Non
     ]
     query = """
       SELECT
-        address,
-        transaction_hash,
+        hex(address) AS address_hex,
+        hex(transaction_hash) AS transaction_hash_hex,
         block_number::BIGINT,
         transaction_index::BIGINT,
         direction,
-        counterparty,
+        hex(counterparty) AS counterparty_hex,
         value_string,
         value_f64,
         success,
@@ -273,23 +333,46 @@ def load_address_tx(cur: psycopg.Cursor, duck: duckdb.DuckDBPyConnection) -> Non
       FROM v_address_tx_new
     """
 
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp:
-        export_query_to_csv(duck, query, tmp.name)
-        cur.execute("CREATE TEMP TABLE _stg_address_tx (LIKE address_tx)")
-        copy_csv_to_table(cur, "_stg_address_tx", columns, tmp.name)
-        cur.execute(
-            """
-            INSERT INTO address_tx (
-              address, transaction_hash, block_number, transaction_index, direction, counterparty,
-              value_string, value_f64, success, block_timestamp, chain_id
-            )
-            SELECT
-              address, transaction_hash, block_number, transaction_index, direction, counterparty,
-              value_string, value_f64, success, block_timestamp, chain_id
-            FROM _stg_address_tx
-            ON CONFLICT (address, block_number, transaction_index, transaction_hash, direction) DO NOTHING
-            """
+    cur.execute(
+        """
+        CREATE TEMP TABLE _stg_address_tx (
+          address_hex TEXT,
+          transaction_hash_hex TEXT,
+          block_number BIGINT,
+          transaction_index BIGINT,
+          direction SMALLINT,
+          counterparty_hex TEXT,
+          value_string TEXT,
+          value_f64 DOUBLE PRECISION,
+          success BOOLEAN,
+          block_timestamp BIGINT,
+          chain_id BIGINT
         )
+        """
+    )
+    copy_query_to_table(cur, duck, query, "_stg_address_tx", columns)
+    cur.execute(
+        """
+        INSERT INTO address_tx (
+          address, transaction_hash, block_number, transaction_index, direction, counterparty,
+          value_string, value_f64, success, block_timestamp, chain_id
+        )
+        SELECT
+          decode(address_hex, 'hex'),
+          decode(transaction_hash_hex, 'hex'),
+          block_number,
+          transaction_index,
+          direction,
+          decode(counterparty_hex, 'hex'),
+          value_string,
+          value_f64,
+          success,
+          block_timestamp,
+          chain_id
+        FROM _stg_address_tx
+        ON CONFLICT (address, block_number, transaction_index, transaction_hash, direction) DO NOTHING
+        """
+    )
 
 
 def main() -> None:
