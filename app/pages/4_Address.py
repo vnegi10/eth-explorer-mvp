@@ -17,14 +17,26 @@ from lib.value_utils import format_value_string_as_eth
 def get_address_summary(address_hex: str) -> dict | None:
     return fetch_one(
         """
+        WITH summary AS (
+          SELECT
+            encode(address, 'hex') AS address_hex,
+            COUNT(*) AS tx_count,
+            MAX(block_number) AS latest_block,
+            MIN(block_number) AS first_block
+          FROM address_tx
+          WHERE address = decode(%s, 'hex')
+          GROUP BY address
+        )
         SELECT
-          encode(address, 'hex') AS address_hex,
-          COUNT(*) AS tx_count,
-          MAX(block_number) AS latest_block,
-          MIN(block_number) AS first_block
-        FROM address_tx
-        WHERE address = decode(%s, 'hex')
-        GROUP BY address
+          s.address_hex,
+          s.tx_count,
+          s.latest_block,
+          lb.timestamp AS latest_block_timestamp,
+          s.first_block,
+          fb.timestamp AS first_block_timestamp
+        FROM summary s
+        LEFT JOIN blocks lb ON lb.block_number = s.latest_block
+        LEFT JOIN blocks fb ON fb.block_number = s.first_block
         """,
         (address_hex,),
     )
@@ -71,7 +83,7 @@ if not summary:
     st.stop()
 
 st.subheader("Summary")
-st.json(summary)
+st.json(format_row_timestamps(summary, keys=("latest_block_timestamp", "first_block_timestamp")))
 
 st.subheader("Recent Activity")
 activity = get_address_activity(needle)
