@@ -43,3 +43,11 @@ def format_value_string_as_eth(row: dict, key: str = "value_string") -> dict:
     if key in out:
         out[key] = wei_string_to_eth_display(out.get(key))
     return out
+
+
+def wei_int_to_eth_display(wei_value: object, decimals: int = 8) -> str | None:
+    if not isinstance(wei_value, int):
+        return None
+    eth = Decimal(wei_value) / _WEI_PER_ETH
+    out = f"{eth:,.{decimals}f}".rstrip("0").rstrip(".")
+    return f"{out} ETH" if out else "0 ETH"
