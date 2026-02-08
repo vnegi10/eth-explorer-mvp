@@ -53,7 +53,7 @@ def get_address_activity(address_hex: str, limit: int = 100) -> list[dict]:
 
 
 st.title("Address")
-address = st.text_input("Address (0x...)")
+address = st.text_input("Address (0x...)", key="address_query")
 if not address:
     st.stop()
 
@@ -78,7 +78,7 @@ activity = get_address_activity(needle)
 if activity:
     st.dataframe(
         [format_value_string_as_eth(format_row_timestamps(row)) for row in activity],
-        use_container_width=True,
+        width="stretch",
     )
 else:
     st.info("No activity found.")

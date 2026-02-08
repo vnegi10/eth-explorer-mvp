@@ -69,6 +69,7 @@ tf = st.selectbox(
     "Timeframe",
     ("Last 1 hour", "Last 6 hours", "Last 24 hours", "Last 7 days", "Last 30 days", "Custom"),
     index=2,
+    key="gas_timeframe",
 )
 
 custom_start_dt = None
@@ -77,11 +78,11 @@ if tf == "Custom":
     now = datetime.now()
     c1, c2 = st.columns(2)
     with c1:
-        start_date = st.date_input("Start date", value=(now - timedelta(days=1)).date())
-        start_time = st.time_input("Start time", value=datetime.min.time())
+        start_date = st.date_input("Start date", value=(now - timedelta(days=1)).date(), key="gas_custom_start_date")
+        start_time = st.time_input("Start time", value=datetime.min.time(), key="gas_custom_start_time")
     with c2:
-        end_date = st.date_input("End date", value=now.date())
-        end_time = st.time_input("End time", value=now.time().replace(microsecond=0))
+        end_date = st.date_input("End date", value=now.date(), key="gas_custom_end_date")
+        end_time = st.time_input("End time", value=now.time().replace(microsecond=0), key="gas_custom_end_time")
     custom_start_dt = datetime.combine(start_date, start_time).replace(tzinfo=timezone.utc)
     custom_end_dt = datetime.combine(end_date, end_time).replace(tzinfo=timezone.utc)
     if custom_end_dt <= custom_start_dt:
@@ -107,7 +108,7 @@ st.line_chart(
     df,
     x="block_timestamp",
     y="avg_gas_price_gwei",
-    use_container_width=True,
+    width="stretch",
 )
 
 latest = float(df["avg_gas_price_gwei"][-1])

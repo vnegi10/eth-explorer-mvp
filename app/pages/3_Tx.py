@@ -39,7 +39,7 @@ def get_tx(tx_hash_hex: str) -> dict | None:
 
 
 st.title("Transaction")
-tx_hash = st.text_input("Transaction hash (0x...)")
+tx_hash = st.text_input("Transaction hash (0x...)", key="tx_hash_query")
 if not tx_hash:
     st.stop()
 

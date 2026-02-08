@@ -61,7 +61,7 @@ def find_address(address_hex: str) -> dict | None:
 st.title("Search")
 st.write("Search by block number, tx hash, or address.")
 
-query = st.text_input("Enter block number / tx hash / address")
+query = st.text_input("Enter block number / tx hash / address", key="search_query")
 if not query:
     st.stop()
 

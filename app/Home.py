@@ -64,7 +64,7 @@ st.caption(
 st.subheader("Recent Blocks")
 recent_blocks = get_recent_blocks()
 if recent_blocks:
-    st.dataframe([format_row_timestamps(row) for row in recent_blocks], use_container_width=True)
+    st.dataframe([format_row_timestamps(row) for row in recent_blocks], width="stretch")
 else:
     st.info("No block data yet. Run ETL first: `python etl/build_serving_tables.py`")
 
@@ -73,7 +73,7 @@ recent_transactions = get_recent_transactions()
 if recent_transactions:
     st.dataframe(
         [format_value_string_as_eth(format_row_timestamps(row)) for row in recent_transactions],
-        use_container_width=True,
+        width="stretch",
     )
 else:
     st.info("No transaction data yet. Run ETL first: `python etl/build_serving_tables.py`")
