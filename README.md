@@ -1,4 +1,4 @@
-# ETH Explorer MVP
+# Eth Explorer MVP
 
 A local-first Ethereum blockchain explorer built on top of Parquet data.
 
@@ -7,7 +7,7 @@ This project:
 - keeps data incrementally updated from a tracked last-ingested block
 - exposes an interactive Streamlit UI for blocks, transactions, addresses, and gas analytics.
 
-## Tech Stack
+## Tech stack
 
 - ETL/query engine: DuckDB
 - Source data: Parquet files on local disk
@@ -15,7 +15,7 @@ This project:
 - App/UI: Streamlit
 - Python package/runtime management: uv
 
-## Data Source
+## Data source
 
 Parquet dataset can be downloaded from HuggingFace:
 - https://huggingface.co/datasets/vnegi10/Ethereum_blockchain_parquet/blob/main/README.md
@@ -48,7 +48,7 @@ Install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## Project Setup
+## Project setup
 
 From repo root:
 
@@ -74,7 +74,7 @@ DUCKDB_THREADS=8
 docker compose up -d postgres
 ```
 
-## Run ETL (Backfill/Incremental)
+## Run ETL (backfill/incremental)
 
 ```bash
 uv run python etl/build_serving_tables.py
@@ -85,7 +85,7 @@ Notes:
 - Re-runs ingest only newer blocks by default.
 - Progress logs print rows and throughput per batch.
 
-## Run the App
+## Run the app
 
 ```bash
 uv run streamlit run app/Home.py
@@ -93,7 +93,7 @@ uv run streamlit run app/Home.py
 
 Open the URL printed by Streamlit (usually `http://localhost:8501`).
 
-## Replication Steps (End-to-End)
+## Replication steps (end-to-end)
 
 1. Clone this repository.
 2. Download Ethereum Parquet data from HuggingFace.
@@ -102,7 +102,7 @@ Open the URL printed by Streamlit (usually `http://localhost:8501`).
 5. Run ETL to backfill serving tables.
 6. Start Streamlit and explore pages.
 
-## Useful Commands
+## Useful commands
 
 Check latest block in Postgres:
 ```sql
