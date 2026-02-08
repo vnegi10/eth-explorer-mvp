@@ -123,3 +123,7 @@ DO UPDATE SET
 
 - Large initial backfills can take significant time and disk I/O.
 - For best throughput, keep Parquet source and Postgres data on separate disks when possible.
+
+## Demo
+
+![Demo](videos/Demo_sample_1.gif)
