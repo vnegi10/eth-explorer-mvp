@@ -7,7 +7,10 @@ from contextlib import contextmanager
 from typing import Any
 
 import psycopg
+from dotenv import load_dotenv
 from psycopg.rows import dict_row
+
+load_dotenv()
 
 
 @contextmanager
