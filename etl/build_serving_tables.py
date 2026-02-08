@@ -10,9 +10,9 @@ load_dotenv()
 PARQUET_DIR = os.environ["PARQUET_DIR"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 INGEST_PIPELINE = "serving_tables_v1"
-ETL_BATCH_SIZE = int(os.environ.get("ETL_BATCH_SIZE", "100000"))
+ETL_BATCH_SIZE = int(os.environ.get("ETL_BATCH_SIZE", "50000"))
 ETL_LOG_EVERY_BATCHES = int(os.environ.get("ETL_LOG_EVERY_BATCHES", "10"))
-ETL_WORKERS = min(8, int(os.environ.get("ETL_WORKERS", "4")))
+ETL_WORKERS = min(8, int(os.environ.get("ETL_WORKERS", "2")))
 DUCKDB_THREADS = min(8, int(os.environ.get("DUCKDB_THREADS", "8")))
 MAX_TOTAL_CORES = 8
 
@@ -273,41 +273,39 @@ def _worker_load_tx(block_start: int, block_end: int) -> tuple[int, int, int]:
 def _worker_load_address_tx(block_start: int, block_end: int) -> tuple[int, int, int]:
     duck = setup_duckdb()
     try:
-        count = int(
-            duck.execute(
-                f"""
-                WITH blocks AS (
-                  SELECT block_number, timestamp
-                  FROM read_parquet('{BLOCKS_GLOB_SQL}')
-                  WHERE block_number BETWEEN {block_start} AND {block_end}
-                ),
-                tx AS (
-                  SELECT *
-                  FROM read_parquet('{TX_GLOB_SQL}')
-                  WHERE block_number BETWEEN {block_start} AND {block_end}
-                ),
-                joined_tx AS (
-                  SELECT
-                    t.transaction_hash,
-                    t.block_number,
-                    t.transaction_index,
-                    t.from_address,
-                    NULLIF(t.to_address, ''::BLOB) AS to_address,
-                    t.value_string,
-                    t.value_f64,
-                    t.success,
-                    t.chain_id,
-                    b.timestamp AS block_timestamp
-                  FROM tx t
-                  JOIN blocks b USING (block_number)
-                )
-                SELECT
-                  COUNT(*) + SUM(CASE WHEN to_address IS NOT NULL THEN 1 ELSE 0 END)
-                FROM joined_tx
-                """
-            ).fetchone()[0]
-        )
-        count = int(count or 0)
+        count_raw = duck.execute(
+            f"""
+            WITH blocks AS (
+              SELECT block_number, timestamp
+              FROM read_parquet('{BLOCKS_GLOB_SQL}')
+              WHERE block_number BETWEEN {block_start} AND {block_end}
+            ),
+            tx AS (
+              SELECT *
+              FROM read_parquet('{TX_GLOB_SQL}')
+              WHERE block_number BETWEEN {block_start} AND {block_end}
+            ),
+            joined_tx AS (
+              SELECT
+                t.transaction_hash,
+                t.block_number,
+                t.transaction_index,
+                t.from_address,
+                NULLIF(t.to_address, ''::BLOB) AS to_address,
+                t.value_string,
+                t.value_f64,
+                t.success,
+                t.chain_id,
+                b.timestamp AS block_timestamp
+              FROM tx t
+              JOIN blocks b USING (block_number)
+            )
+            SELECT
+              COUNT(*) + SUM(CASE WHEN to_address IS NOT NULL THEN 1 ELSE 0 END)
+            FROM joined_tx
+            """
+        ).fetchone()[0]
+        count = int(count_raw or 0)
         if count > 0:
             duck.execute(
                 f"""
