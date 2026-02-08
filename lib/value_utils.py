@@ -4,6 +4,7 @@ from decimal import Decimal
 
 
 _WEI_PER_ETH = Decimal(10**18)
+_WEI_PER_GWEI = Decimal(10**9)
 
 
 def wei_string_to_eth_display(wei_value: object, decimals: int = 8) -> str | None:
@@ -51,3 +52,11 @@ def wei_int_to_eth_display(wei_value: object, decimals: int = 8) -> str | None:
     eth = Decimal(wei_value) / _WEI_PER_ETH
     out = f"{eth:,.{decimals}f}".rstrip("0").rstrip(".")
     return f"{out} ETH" if out else "0 ETH"
+
+
+def wei_int_to_gwei_display(wei_value: object, decimals: int = 4) -> str | None:
+    if not isinstance(wei_value, int):
+        return None
+    gwei = Decimal(wei_value) / _WEI_PER_GWEI
+    out = f"{gwei:,.{decimals}f}".rstrip("0").rstrip(".")
+    return f"{out} Gwei" if out else "0 Gwei"

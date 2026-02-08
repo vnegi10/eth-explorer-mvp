@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 from lib.db import fetch_one
 from lib.hex import is_hex, normalize_hex
 from lib.time_utils import format_row_timestamps
-from lib.value_utils import format_value_string_as_eth, wei_int_to_eth_display
+from lib.value_utils import format_value_string_as_eth, wei_int_to_eth_display, wei_int_to_gwei_display
 
 
 @st.cache_data(ttl=30)
@@ -59,6 +59,7 @@ if not tx:
 tx_out = format_value_string_as_eth(format_row_timestamps(tx))
 gas_price = tx_out.get("gas_price")
 gas_used = tx_out.get("gas_used")
+tx_out["gas_price"] = wei_int_to_gwei_display(gas_price)
 if isinstance(gas_price, int) and isinstance(gas_used, int):
     tx_out["transaction_fee_eth"] = wei_int_to_eth_display(gas_price * gas_used)
 else:
