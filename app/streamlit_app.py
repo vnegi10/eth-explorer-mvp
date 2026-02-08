@@ -5,8 +5,6 @@ All interactive data on this UI comes from Postgres serving tables.
 
 import sys
 from pathlib import Path
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -15,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from lib.db import fetch_all
+from lib.time_utils import format_row_timestamps
 
 
 @st.cache_data(ttl=20)
@@ -41,13 +40,6 @@ st.caption("Postgres-backed explorer MVP. Use the sidebar to navigate pages.")
 st.subheader("Recent Blocks")
 recent_blocks = get_recent_blocks()
 if recent_blocks:
-    cet = ZoneInfo("CET")
-    for row in recent_blocks:
-        ts = row.get("timestamp")
-        if isinstance(ts, int):
-            row["timestamp"] = datetime.fromtimestamp(ts, tz=cet).strftime("%Y-%m-%d %H:%M:%S %Z")
-        else:
-            row["timestamp"] = None
-    st.dataframe(recent_blocks, use_container_width=True)
+    st.dataframe([format_row_timestamps(row) for row in recent_blocks], use_container_width=True)
 else:
     st.info("No block data yet. Run ETL first: `python etl/build_serving_tables.py`")

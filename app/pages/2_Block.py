@@ -8,6 +8,8 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from lib.db import fetch_all, fetch_one
+from lib.time_utils import format_row_timestamps
+from lib.value_utils import format_value_string_as_eth
 
 
 @st.cache_data(ttl=30)
@@ -59,11 +61,11 @@ if not block:
     st.stop()
 
 st.subheader("Block Details")
-st.json(block)
+st.json(format_row_timestamps(block))
 
 st.subheader("Transactions")
 txs = get_block_txs(int(block_number))
 if txs:
-    st.dataframe(txs, use_container_width=True)
+    st.dataframe([format_value_string_as_eth(row) for row in txs], use_container_width=True)
 else:
     st.info("No transactions for this block.")

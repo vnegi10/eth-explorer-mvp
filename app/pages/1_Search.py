@@ -9,6 +9,8 @@ if str(ROOT) not in sys.path:
 
 from lib.db import fetch_one
 from lib.hex import is_hex, normalize_hex
+from lib.time_utils import format_row_timestamps
+from lib.value_utils import format_value_string_as_eth
 
 
 @st.cache_data(ttl=30)
@@ -31,6 +33,7 @@ def find_tx(tx_hash_hex: str) -> dict | None:
           encode(transaction_hash, 'hex') AS transaction_hash_hex,
           block_number,
           transaction_index,
+          value_string,
           block_timestamp
         FROM tx
         WHERE transaction_hash = decode(%s, 'hex')
@@ -66,7 +69,7 @@ if query.isdigit():
     block = find_block(int(query))
     if block:
         st.success(f"Block found: {block['block_number']}")
-        st.json(block)
+        st.json(format_row_timestamps(block))
     else:
         st.warning("Block not found.")
     st.stop()
@@ -79,7 +82,7 @@ if len(needle) == 64:
     tx = find_tx(needle)
     if tx:
         st.success("Transaction found.")
-        st.json(tx)
+        st.json(format_value_string_as_eth(format_row_timestamps(tx)))
     else:
         st.warning("Transaction not found.")
     st.stop()

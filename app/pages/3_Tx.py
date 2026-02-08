@@ -9,6 +9,8 @@ if str(ROOT) not in sys.path:
 
 from lib.db import fetch_one
 from lib.hex import is_hex, normalize_hex
+from lib.time_utils import format_row_timestamps
+from lib.value_utils import format_value_string_as_eth
 
 
 @st.cache_data(ttl=30)
@@ -54,4 +56,4 @@ if not tx:
     st.warning("Transaction not found.")
     st.stop()
 
-st.json(tx)
+st.json(format_value_string_as_eth(format_row_timestamps(tx)))

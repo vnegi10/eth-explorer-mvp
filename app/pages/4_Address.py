@@ -9,6 +9,8 @@ if str(ROOT) not in sys.path:
 
 from lib.db import fetch_all, fetch_one
 from lib.hex import is_hex, normalize_hex
+from lib.time_utils import format_row_timestamps
+from lib.value_utils import format_value_string_as_eth
 
 
 @st.cache_data(ttl=30)
@@ -74,6 +76,9 @@ st.json(summary)
 st.subheader("Recent Activity")
 activity = get_address_activity(needle)
 if activity:
-    st.dataframe(activity, use_container_width=True)
+    st.dataframe(
+        [format_value_string_as_eth(format_row_timestamps(row)) for row in activity],
+        use_container_width=True,
+    )
 else:
     st.info("No activity found.")
