@@ -1,211 +1,246 @@
-# Ethereum Blockchain Explorer (MVP)
+# Ethereum Blockchain Explorer
 
-A full-stack Ethereum analytics project that transforms large Parquet datasets into indexed PostgreSQL serving tables and exposes them through an interactive
+An end-to-end Ethereum data engineering and analytics project that turns raw Parquet files into an indexed PostgreSQL serving layer and an interactive
 Streamlit explorer.
 
-The project focuses on the engineering challenges behind blockchain-scale analytics: bounded-memory ETL, parallel ingestion, idempotent backfills,
+The MVP focuses on the engineering challenges behind blockchain-scale analytics: bounded-memory ETL, parallel ingestion, idempotent backfills,
 query-oriented data modelling, database performance, and a usable exploration interface.
 
-## What This Project Demonstrates
+![Ethereum Blockchain Explorer demo](videos/Demo_sample_1.gif)
 
-- Building a complete analytical data path from raw files to a user-facing application
-- Processing tens of millions of Ethereum records with DuckDB and Python
-- Designing resumable, configurable ETL jobs for large historical backfills
-- Optimizing Parquet scans with timestamp windows and block-number predicate pruning
-- Serving low-latency application queries from PostgreSQL with purpose-built indexes
-- Operating PostgreSQL in Docker with bulk-ingest tuning and persistent storage
-- Presenting blockchain data through search, detail views, address activity, and time-series analytics
+## Project highlights
 
-## Features
+- End-to-end pipeline from raw Ethereum data to an interactive application
+- Incremental, restart-safe ETL using a durable block checkpoint
+- Parallel block-range ingestion with controlled CPU concurrency
+- Direct Parquet querying and transformation with DuckDB
+- Query-oriented PostgreSQL tables and indexes for explorer workloads
+- Exact integer handling for Wei values and compact binary storage for hashes and addresses
+- Multipage Streamlit interface with cached, parameterized database queries
+- Time-series gas analytics with timeframe-dependent aggregation
 
-- Recent Ethereum blocks and transactions dashboard
-- Unified search by block number, transaction hash, or address
-- Block details with transactions and date-range exploration
-- Transaction details, including value, gas price, and calculated transaction fee
-- Address summaries with first/latest activity and recent inbound/outbound transactions
-- Gas-price time series with adaptive aggregation buckets and custom date ranges
-- CET-aware timestamp display and Wei-to-ETH/Gwei formatting
-- Cached Streamlit queries to reduce repeated database load
+## The problem
+
+Blockchain datasets are large, append continuously, and are not naturally shaped for low-latency application queries. Reading the source Parquet files for
+every user interaction would make searches and detail pages unnecessarily expensive.
+
+This project separates ingestion from serving. DuckDB performs analytical scans and transformations close to the Parquet source, while PostgreSQL stores a
+smaller, indexed model designed around the explorer's queries. Streamlit then reads only from that serving layer.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Ethereum Parquet files] --> B[DuckDB ETL workers]
-    B --> C[(PostgreSQL serving tables)]
-    C --> D[Python query layer]
-    D --> E[Streamlit explorer]
-
-    F[Date window and chunk settings] --> B
-    G[Ingestion metadata] <--> B
+    P[(Ethereum Parquet files)] -->|predicate-filtered scans| D[DuckDB ETL workers]
+    D -->|transform and load| PG[(PostgreSQL)]
+    PG --> Q[Python query layer]
+    Q --> S[Streamlit explorer]
+    M[(ingestion_meta)] -->|last completed block| D
+    D -->|advance after all stages succeed| M
 ```
 
-The system deliberately separates analytical ingestion from application serving:
+### Data flow
 
-- **Parquet** is the compact source format for historical blockchain data.
-- **DuckDB** scans and transforms Parquet directly without loading entire datasets into Python memory.
-- **PostgreSQL** stores application-oriented tables and indexes for predictable interactive queries.
-- **Streamlit** provides a multipage explorer backed exclusively by the PostgreSQL serving layer.
+1. The ETL reads the latest completed block from PostgreSQL.
+2. It discovers the highest block available in the Parquet dataset.
+3. New blocks are divided into configurable block-number ranges.
+4. Separate process pools load blocks, transactions, and address activity.
+5. Transaction records are joined to blocks to add their timestamp.
+6. Each transaction is expanded into sender and, where applicable, recipient activity rows.
+7. The checkpoint advances only after all three serving tables finish loading successfully.
 
-## Tech stack
-
-- ETL/query engine: DuckDB
-- Source data: Parquet files on local disk
-- Serving database: Postgres (Docker)
-- App/UI: Streamlit
-- Python package/runtime management: uv
-
-## Data source
-
-Parquet dataset can be downloaded from HuggingFace:
-- https://huggingface.co/datasets/vnegi10/Ethereum_blockchain_parquet/blob/main/README.md
+Conflict handling makes a retry safe: block records are upserted, while duplicate transaction and address-activity records are ignored.
 
 ## Features
 
-- Home page with recent blocks and recent transactions
-- Search page for block number, tx hash, or address
-- Block page with:
-  - block details
-  - transactions for a block
-  - blocks-by-date filter
-  - average gas price (Gwei) per block in date-filter results
-- Tx page with:
-  - value shown in ETH
-  - gas price shown in Gwei
-  - estimated transaction fee in ETH
-- Address page with summary + recent activity
-- Gas page with timeframe-based gas-price trend (Gwei vs timestamp)
+### Explorer
 
-## ETL Design
+- Dashboard of recent blocks and transactions
+- Unified search for a block number, transaction hash, or address
+- Block details and ordered transactions within a block
+- Block discovery by day or date range, including average gas price
+- Transaction details with ETH value, Gwei gas price, status, and calculated fee
+- Address summary with first/latest activity and recent inbound/outbound transactions
+- Gas-price trend chart with presets, custom ranges, and adaptive time buckets
+- CET-aware timestamps and human-readable ETH/Gwei formatting
 
-The ETL entry point is [`etl/build_serving_tables.py`](etl/build_serving_tables.py).
+### Data pipeline
 
-### Bounded-memory processing
+- Incremental ingestion based on the last successfully loaded block
+- Configurable batch size, worker count, logging frequency, and DuckDB threads
+- Parallel processing with an eight-core global concurrency cap
+- Predicate filtering on block numbers to reduce unnecessary Parquet scans
+- Progress and throughput reporting for each loading stage
+- Idempotent writes that support recovery after an interrupted run
 
-The requested date window is divided into configurable chunks. `ETL_CHUNK_DAYS` accepts whole or fractional values, so `0.5` represents 12 hours. Each worker processes only one chunk at a time.
+## Tech stack
 
-### Parallel execution
-
-`ProcessPoolExecutor` schedules one task per time range while limiting active work to `ETL_WORKERS`. DuckDB threads are capped per worker so the process pool does not oversubscribe the host.
-
-### Parquet pruning
-
-For transaction workloads, the ETL first identifies the minimum and maximum block numbers in the timestamp-filtered block set. It then applies that range to the transaction Parquet scan before performing an exact inner join to the selected blocks. This reduces data scanned while preserving timestamp-window correctness.
-
-### Idempotency and recovery
-
-- Blocks use `ON CONFLICT ... DO UPDATE`.
-- Transactions and address activity use `ON CONFLICT ... DO NOTHING`.
-- `ingestion_window_meta` records `in_progress`, `completed`, and `failed` states.
-- Completed windows are skipped unless `ETL_FORCE_RELOAD_WINDOW=1` is set.
-- Each completed batch is committed independently, allowing interrupted runs to restart safely.
-
-### Progress reporting
-
-Each loading stage reports completed batches, cumulative rows, elapsed time, and throughput. Blocks, transactions, and address activity are loaded as separate stages.
-
-## Data Model
-
-| Table | Purpose | Important keys/indexes |
+| Layer | Technology | Why it is used |
 | --- | --- | --- |
-| `blocks` | Canonical block metadata | Primary key on `block_number`; descending block index |
-| `tx` | Transaction details and block timestamp | Primary key on transaction hash; unique block position; block/from/to lookup indexes |
-| `address_tx` | Address-centric inbound/outbound activity | Composite primary key; recent activity index by address and block position |
-| `ingestion_window_meta` | ETL window state and rerun control | Composite key on pipeline and window timestamps |
+| Source | Parquet | Compact, columnar storage for historical blockchain data |
+| Transformation | DuckDB | Efficient in-process Parquet scans, SQL transformations, and direct PostgreSQL loading |
+| Serving | PostgreSQL 16 | Indexed, durable storage for predictable interactive queries |
+| Application | Streamlit | Fast delivery of a multipage data product in Python |
+| Data frames | Polars | Lightweight preparation of gas time-series results |
+| Database client | Psycopg 3 | Parameterized PostgreSQL queries from the application |
+| Environment | Docker Compose, `uv` | Reproducible database and Python dependency setup |
 
-Ethereum hashes and addresses are stored as binary values (`BYTEA`) rather than text, reducing storage and index size. Large Wei values are retained as strings where necessary to avoid integer overflow or precision loss.
+## Serving data model
 
-## Prerequisites
+| Table | Role | Key access patterns |
+| --- | --- | --- |
+| `blocks` | Canonical block metadata | Block lookup, newest blocks, date-range filtering |
+| `tx` | Transaction facts enriched with block timestamps | Hash lookup, transactions by block, sender/recipient queries, gas aggregation |
+| `address_tx` | Denormalized sender and recipient activity | Recent activity and first/latest block for an address |
+| `ingestion_meta` | Pipeline checkpoint | Resume ingestion above the last fully completed block |
 
-- Linux/macOS shell
-- Python 3.10+
-- Docker + Docker Compose
-- uv
+Ethereum hashes and addresses are stored as `BYTEA` instead of hexadecimal text to reduce row and index size. The original Wei value is retained as text
+because Ethereum quantities can exceed conventional integer ranges; display conversions use Python's `Decimal` to avoid floating-point precision loss.
 
-Install uv:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+Indexes mirror the UI's access patterns, including transaction position within a block and reverse-chronological address activity. This improves read latency
+at the cost of additional storage and bulk-write overhead.
+
+## Repository structure
+
+```text
+.
+├── app/
+│   ├── Home.py                  # Recent blocks and transactions
+│   └── pages/                   # Search, block, transaction, address, and gas views
+├── etl/
+│   └── build_serving_tables.py  # Schema creation and incremental ETL
+├── lib/                         # Database, hex, time, value, and pagination helpers
+├── videos/                      # Product demo
+├── docker-compose.yml           # Local PostgreSQL service
+├── pyproject.toml               # Python project and dependencies
+└── uv.lock                      # Reproducible dependency lockfile
 ```
 
-## Project setup
+## Run locally
 
-From repo root:
+### Prerequisites
 
-1. Install dependencies
+- Python 3.10 or newer
+- [Docker and Docker Compose](https://docs.docker.com/compose/)
+- [`uv`](https://docs.astral.sh/uv/)
+- The Ethereum Parquet dataset described in the [source dataset documentation](https://huggingface.co/datasets/vnegi10/Ethereum_blockchain_parquet/blob/main/README.md)
+
+The dataset directory must contain the following layout:
+
+```text
+Ethereum_blockchain_parquet/
+├── blocks/
+│   └── *.parquet
+└── transactions/
+    └── *.parquet
+```
+
+### 1. Install dependencies
+
 ```bash
 uv sync
 ```
 
-2. Configure environment variables in `.env`
-```env
+### 2. Configure PostgreSQL storage
+
+The included Compose file persists PostgreSQL data at `/mnt/ugreen/postgres/eth_explorer_mvp`. Change that host path in `docker-compose.yml` if it does not
+exist on your machine, then start the database:
+
+```bash
+docker compose up -d postgres
+```
+
+### 3. Configure the environment
+
+Create a `.env` file in the repository root:
+
+```dotenv
 DATABASE_URL=postgresql://explorer:explorer@localhost:5433/explorer
 PARQUET_DIR=/absolute/path/to/Ethereum_blockchain_parquet
 
-# Optional ETL tuning
-ETL_BATCH_SIZE=100000
+# Optional ETL tuning; values below are the application defaults
+ETL_BATCH_SIZE=50000
 ETL_LOG_EVERY_BATCHES=10
 ETL_WORKERS=2
 DUCKDB_THREADS=8
 ```
 
-3. Start Postgres
-```bash
-docker compose up -d postgres
-```
+`ETL_BATCH_SIZE` is a number of blocks, not a row count. Worker and DuckDB thread settings are capped so the ETL uses no more than eight cores in total.
 
-## Run ETL (backfill/incremental)
+On its first run, DuckDB may need to install its PostgreSQL extension.
+
+### 4. Build or update the serving tables
 
 ```bash
 uv run python etl/build_serving_tables.py
 ```
 
-Notes:
-- ETL tracks progress in `ingestion_meta.last_ingested_block`.
-- Re-runs ingest only newer blocks by default.
-- Progress logs print rows and throughput per batch.
+The first run backfills the available dataset. Later runs load only blocks above `ingestion_meta.last_ingested_block`.
 
-## Run the app
+### 5. Launch the explorer
 
 ```bash
 uv run streamlit run app/Home.py
 ```
 
-Open the URL printed by Streamlit (usually `http://localhost:8501`).
+Open the address printed by Streamlit, normally <http://localhost:8501>.
 
-## Replication steps (end-to-end)
+## Operating the pipeline
 
-1. Clone this repository.
-2. Download Ethereum Parquet data from HuggingFace.
-3. Set `PARQUET_DIR` and `DATABASE_URL` in `.env`.
-4. Start Postgres with Docker Compose.
-5. Run ETL to backfill serving tables.
-6. Start Streamlit and explore pages.
+Check the available serving data and ETL checkpoint:
 
-## Useful commands
-
-Check latest block in Postgres:
 ```sql
-SELECT MAX(block_number) AS latest_block FROM blocks;
+SELECT COUNT(*) AS blocks, MAX(block_number) AS latest_block FROM blocks;
+
+SELECT pipeline_name, last_ingested_block, updated_at
+FROM ingestion_meta;
 ```
 
-Set ETL checkpoint manually (example):
+The checkpoint is intentionally updated only after the block, transaction, and address-activity stages have all completed. If execution stops earlier,
+rerunning the ETL revisits that range and relies on the tables' conflict rules to prevent duplicate records.
+
+To restart from a deliberate earlier point, update the checkpoint only after confirming that the corresponding serving-table data is in the desired state:
+
 ```sql
 INSERT INTO ingestion_meta (pipeline_name, last_ingested_block, updated_at)
 VALUES ('serving_tables_v1', 17199992, NOW())
-ON CONFLICT (pipeline_name)
-DO UPDATE SET
+ON CONFLICT (pipeline_name) DO UPDATE SET
   last_ingested_block = EXCLUDED.last_ingested_block,
   updated_at = NOW();
 ```
 
-## Design Trade-offs
+## Engineering decisions and trade-offs
 
-- PostgreSQL indexes improve explorer latency but increase bulk-ingest cost.
-- Per-batch commits make interrupted runs recoverable but do not provide whole-window atomicity.
-- Exact block joins preserve correctness after range pruning, at the cost of an additional join.
-- Streamlit provides rapid product delivery, while a dedicated API/frontend would offer more control for a production deployment.
-- The current direct-to-serving-table approach is simple; staging tables and deferred index creation could improve very large backfills.
+- **Dedicated serving layer:** PostgreSQL avoids repeated full-dataset scans, but duplicates selected source fields and requires an ETL step.
+- **Denormalized address activity:** Precomputing both sides of a transfer makes address pages simple and index-friendly, but can create two activity rows per transaction.
+- **Parallel range loading:** Multiple processes increase throughput, while explicit thread caps prevent each DuckDB instance from oversubscribing the machine.
+- **End-of-run checkpoint:** Advancing only after every table completes avoids marking a partial load as successful. A retry may repeat work, so inserts must remain idempotent.
+- **Indexes for reads:** Purpose-built indexes improve explorer responsiveness but slow ingestion and consume disk space.
+- **Streamlit delivery:** A Python-only UI keeps the MVP focused on data engineering. A separate API and frontend would provide finer control for a production
+product.
 
-## Demo
+## Current scope and roadmap
 
-![Demo](videos/Demo_sample_1.gif)
+This repository is an MVP built around a local historical dataset. It is not a consensus client, wallet, or real-time chain indexer.
+
+Potential next steps include:
+
+- Add automated unit and integration tests for transformations, retry behavior, and query helpers
+- Add CI checks for formatting, linting, and tests
+- Replace the host-specific PostgreSQL bind mount with configurable storage
+- Add container health checks and application-level database error handling
+- Introduce migrations instead of creating the serving schema inside the ETL
+- Add observability for ETL duration, failed ranges, database size, and query latency
+- Support near-real-time ingestion from an Ethereum RPC endpoint
+- Add an API and dedicated frontend for deployment at larger scale
+
+## What this project demonstrates
+
+For a reviewer, the repository provides concrete examples of:
+
+- Data pipeline design and incremental processing
+- Analytical SQL and data modelling for product requirements
+- Parallelism, resource controls, idempotency, and recovery strategy
+- PostgreSQL schema and index design
+- Numeric precision and domain-aware data representation
+- Translating backend datasets into an understandable end-user experience
