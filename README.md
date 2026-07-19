@@ -1,11 +1,51 @@
-# Eth Explorer MVP
+# Ethereum Blockchain Explorer (MVP)
 
-A local-first Ethereum blockchain explorer built on top of Parquet data.
+A full-stack Ethereum analytics project that transforms large Parquet datasets into indexed PostgreSQL serving tables and exposes them through an interactive
+Streamlit explorer.
 
-This project:
-- backfills serving tables from Parquet into Postgres
-- keeps data incrementally updated from a tracked last-ingested block
-- exposes an interactive Streamlit UI for blocks, transactions, addresses, and gas analytics.
+The project focuses on the engineering challenges behind blockchain-scale analytics: bounded-memory ETL, parallel ingestion, idempotent backfills,
+query-oriented data modelling, database performance, and a usable exploration interface.
+
+## What This Project Demonstrates
+
+- Building a complete analytical data path from raw files to a user-facing application
+- Processing tens of millions of Ethereum records with DuckDB and Python
+- Designing resumable, configurable ETL jobs for large historical backfills
+- Optimizing Parquet scans with timestamp windows and block-number predicate pruning
+- Serving low-latency application queries from PostgreSQL with purpose-built indexes
+- Operating PostgreSQL in Docker with bulk-ingest tuning and persistent storage
+- Presenting blockchain data through search, detail views, address activity, and time-series analytics
+
+## Features
+
+- Recent Ethereum blocks and transactions dashboard
+- Unified search by block number, transaction hash, or address
+- Block details with transactions and date-range exploration
+- Transaction details, including value, gas price, and calculated transaction fee
+- Address summaries with first/latest activity and recent inbound/outbound transactions
+- Gas-price time series with adaptive aggregation buckets and custom date ranges
+- CET-aware timestamp display and Wei-to-ETH/Gwei formatting
+- Cached Streamlit queries to reduce repeated database load
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Ethereum Parquet files] --> B[DuckDB ETL workers]
+    B --> C[(PostgreSQL serving tables)]
+    C --> D[Python query layer]
+    D --> E[Streamlit explorer]
+
+    F[Date window and chunk settings] --> B
+    G[Ingestion metadata] <--> B
+```
+
+The system deliberately separates analytical ingestion from application serving:
+
+- **Parquet** is the compact source format for historical blockchain data.
+- **DuckDB** scans and transforms Parquet directly without loading entire datasets into Python memory.
+- **PostgreSQL** stores application-oriented tables and indexes for predictable interactive queries.
+- **Streamlit** provides a multipage explorer backed exclusively by the PostgreSQL serving layer.
 
 ## Tech stack
 
@@ -35,6 +75,45 @@ Parquet dataset can be downloaded from HuggingFace:
   - estimated transaction fee in ETH
 - Address page with summary + recent activity
 - Gas page with timeframe-based gas-price trend (Gwei vs timestamp)
+
+## ETL Design
+
+The ETL entry point is [`etl/build_serving_tables.py`](etl/build_serving_tables.py).
+
+### Bounded-memory processing
+
+The requested date window is divided into configurable chunks. `ETL_CHUNK_DAYS` accepts whole or fractional values, so `0.5` represents 12 hours. Each worker processes only one chunk at a time.
+
+### Parallel execution
+
+`ProcessPoolExecutor` schedules one task per time range while limiting active work to `ETL_WORKERS`. DuckDB threads are capped per worker so the process pool does not oversubscribe the host.
+
+### Parquet pruning
+
+For transaction workloads, the ETL first identifies the minimum and maximum block numbers in the timestamp-filtered block set. It then applies that range to the transaction Parquet scan before performing an exact inner join to the selected blocks. This reduces data scanned while preserving timestamp-window correctness.
+
+### Idempotency and recovery
+
+- Blocks use `ON CONFLICT ... DO UPDATE`.
+- Transactions and address activity use `ON CONFLICT ... DO NOTHING`.
+- `ingestion_window_meta` records `in_progress`, `completed`, and `failed` states.
+- Completed windows are skipped unless `ETL_FORCE_RELOAD_WINDOW=1` is set.
+- Each completed batch is committed independently, allowing interrupted runs to restart safely.
+
+### Progress reporting
+
+Each loading stage reports completed batches, cumulative rows, elapsed time, and throughput. Blocks, transactions, and address activity are loaded as separate stages.
+
+## Data Model
+
+| Table | Purpose | Important keys/indexes |
+| --- | --- | --- |
+| `blocks` | Canonical block metadata | Primary key on `block_number`; descending block index |
+| `tx` | Transaction details and block timestamp | Primary key on transaction hash; unique block position; block/from/to lookup indexes |
+| `address_tx` | Address-centric inbound/outbound activity | Composite primary key; recent activity index by address and block position |
+| `ingestion_window_meta` | ETL window state and rerun control | Composite key on pipeline and window timestamps |
+
+Ethereum hashes and addresses are stored as binary values (`BYTEA`) rather than text, reducing storage and index size. Large Wei values are retained as strings where necessary to avoid integer overflow or precision loss.
 
 ## Prerequisites
 
@@ -119,10 +198,13 @@ DO UPDATE SET
   updated_at = NOW();
 ```
 
-## Caveats
+## Design Trade-offs
 
-- Large initial backfills can take significant time and disk I/O.
-- For best throughput, keep Parquet source and Postgres data on separate disks when possible.
+- PostgreSQL indexes improve explorer latency but increase bulk-ingest cost.
+- Per-batch commits make interrupted runs recoverable but do not provide whole-window atomicity.
+- Exact block joins preserve correctness after range pruning, at the cost of an additional join.
+- Streamlit provides rapid product delivery, while a dedicated API/frontend would offer more control for a production deployment.
+- The current direct-to-serving-table approach is simple; staging tables and deferred index creation could improve very large backfills.
 
 ## Demo
 
